@@ -12,7 +12,7 @@ BOLA occurs when an application exposes endpoints that handle object identifiers
 | Endpoint | Method | Description | Authorization |
 |----------|--------|-------------|---------------|
 | `/api/users/bola-issue?userId={id}` | GET | Vulnerable endpoint - no authorization check | Authenticated |
-| `/api/users/bola-fix?userId={id}` | GET | Fixed endpoint - validates ownership | Authenticated |
+| `/api/users/bola-fix?userId={id}` | GET | Fixed endpoint - validates ownership via SecurityService | Authenticated |
 
 ### Account Endpoints (JPA/H2 Database)
 | Endpoint | Method | Description | Authorization |
@@ -103,7 +103,7 @@ Expected: Returns account ACC-001.
 
 Access another user's account (blocked):
 ```bash
-curl -u user1:password "http://localhost:8080/api/accounts/bola-fix/3"
+curl -u user1:password "http://localhost:8080/api/accounts/bola-fix/3" --write-out "%{http_code}"
 ```
 Expected: **404 Not Found**
 
@@ -132,10 +132,46 @@ public ResponseEntity<?> getUserBolaIssue(@RequestParam int userId) {
 ```
 **Issue:** No check if the authenticated user is authorized to access the requested user data.
 
-### Fixed Code (bola-fix) - Using @PreAuthorize
+---
+
+### Fix 1: Using @SecurityService
+
+**SecurityService:**
+```java
+@Service("securityService")
+public class SecurityService {
+
+    private int getCurrentUserId(Authentication authentication) {
+        if (authentication != null && authentication.getPrincipal() instanceof CustomUserDetails userDetails) {
+            return userDetails.getUserId();
+        }
+        //Added fallback for non-custom user details
+        if (authentication != null && authentication.getPrincipal() instanceof UserDetails userDetails) {
+            String username = userDetails.getUsername();
+            if ("user1".equals(username)) return 1;
+            if ("user2".equals(username)) return 2;
+        }
+        return -1;
+    }
+
+    private boolean isAdmin(Authentication authentication) {
+        if (authentication == null) {
+            return false;
+        }
+        return authentication.getAuthorities().stream()
+            .anyMatch(a -> a.getAuthority().equals("ROLE_ADMIN"));
+    }
+
+    public boolean isOwner(int userId, Authentication authentication) {
+        return isAdmin(authentication) || getCurrentUserId(authentication) == userId;
+    }
+}
+```
+
+**Controller:**
 ```java
 @GetMapping("/bola-fix")
-@PreAuthorize("#userId == authentication.principal.userId or hasRole('ADMIN')")
+@PreAuthorize("@securityService.isOwner(#userId, authentication)")
 public ResponseEntity<?> getUserBolaFix(@RequestParam int userId) {
     User user = getUserById(userId);
     if (user == null) {
@@ -144,11 +180,11 @@ public ResponseEntity<?> getUserBolaFix(@RequestParam int userId) {
     return ResponseEntity.ok(user);
 }
 ```
-**Fix:** Uses `@PreAuthorize` with SpEL to verify that the authenticated user is accessing their own data.
+**Advantage:** Reusable authorization logic that can be used across multiple controllers and endpoints.
 
 ---
 
-### Alternative Fix: Database Query Authorization (JPA)
+### Fix 2: Database Query Authorization (JPA)
 
 This approach bakes authorization directly into the database query, making it impossible to forget authorization checks.
 
@@ -225,8 +261,9 @@ public class CustomUserDetails implements UserDetails {
 
 1. **Always validate object-level authorization** - Check if the authenticated user has permission to access the requested resource
 2. **Use method-level security annotations** - Leverage `@PreAuthorize` with SpEL expressions for declarative security
-3. **Extend UserDetails with application-specific fields** - Store `userId` in `CustomUserDetails` for easy access in authorization checks
-4. **Implement custom UserDetailsService** - Load user details including application-specific fields from your user store
-5. **Fail securely** - Deny access by default when authorization checks fail
-6. **Prevent information leakage** - Return generic error responses (404) instead of specific ones (403) to avoid user enumeration attacks
-7. **Bake authorization into database queries** - Use parameterized queries that include ownership checks to make authorization a core part of data access
+3. **Create reusable security services** - Use `@SecurityService` pattern to centralize authorization logic
+4. **Extend UserDetails with application-specific fields** - Store `userId` in `CustomUserDetails` for easy access in authorization checks
+5. **Implement custom UserDetailsService** - Load user details including application-specific fields from your user store
+6. **Fail securely** - Deny access by default when authorization checks fail
+7. **Prevent information leakage** - Return generic error responses (404) instead of specific ones (403) to avoid user enumeration attacks
+8. **Bake authorization into database queries** - Use parameterized queries that include ownership checks to make authorization a core part of data access

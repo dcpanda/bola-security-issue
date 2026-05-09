@@ -41,7 +41,7 @@ public class UserController {
     }
 
     @GetMapping("/bola-fix")
-    @PreAuthorize("#userId == authentication.principal.userId or hasRole('ADMIN')")
+    @PreAuthorize("@securityService.isOwner(#userId, authentication)")
     public ResponseEntity<?> getUserBolaFix(@RequestParam int userId) {
         User user = getUserById(userId);
         if (user == null) {
