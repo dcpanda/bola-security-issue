@@ -8,8 +8,17 @@ BOLA occurs when an application exposes endpoints that handle object identifiers
 
 ## Endpoints
 
-1. `/api/users/bola-issue?userId={id}` - Vulnerable endpoint .
-2. `/api/users/bola-fix?userId={id}` |- Fixed endpoint - validates ownership.
+### User Endpoints (In-Memory)
+| Endpoint | Method | Description | Authorization |
+|----------|--------|-------------|---------------|
+| `/api/users/bola-issue?userId={id}` | GET | Vulnerable endpoint - no authorization check | Authenticated |
+| `/api/users/bola-fix?userId={id}` | GET | Fixed endpoint - validates ownership | Authenticated |
+
+### Account Endpoints (JPA/H2 Database)
+| Endpoint | Method | Description | Authorization |
+|----------|--------|-------------|---------------|
+| `/api/accounts/bola-issue/{id}` | GET | Vulnerable endpoint - no authorization check | Authenticated |
+| `/api/accounts/bola-fix/{id}` | GET | Fixed endpoint - validates ownership via database query | Authenticated |
 
 ## Prerequisites
 
@@ -24,6 +33,11 @@ mvn spring-boot:run
 
 The application will start on `http://localhost:8080`
 
+H2 Console available at: `http://localhost:8080/h2-console`
+- JDBC URL: `jdbc:h2:mem:boladb`
+- Username: `sa`
+- Password: (empty)
+
 ## How to Test BOLA Issues
 
 ### Test Users
@@ -33,43 +47,67 @@ The application will start on `http://localhost:8080`
 | user1 | password | USER | 1 |
 | user2 | password | USER | 2 |
 
-### Testing the BOLA Vulnerability
+### Sample Account Data
 
-**1. Test the VULNERABLE endpoint (`/bola-issue`)**
+| ID | Account Name | Account Number | Owner | Balance |
+|----|--------------|----------------|-------|---------|
+| 1 | Savings Account | ACC-001 | user1 | 5000.00 |
+| 2 | Checking Account | ACC-002 | user1 | 1500.00 |
+| 3 | Savings Account | ACC-003 | user2 | 10000.00 |
+| 4 | Investment Account | ACC-004 | user2 | 25000.00 |
 
-Access own data (as user1):
-```bash
-curl -u user1:password "http://localhost:8080/api/users/bola-issue?userId=1"
-```
-Result: Shows user1 is logged in and can access Alice's data.
+---
+
+## Testing User Endpoints
+
+### Test the VULNERABLE endpoint (`/api/users/bola-issue`)
 
 Access another user's data while authenticated as user1 (BOLA vulnerability):
 ```bash
 curl -u user1:password "http://localhost:8080/api/users/bola-issue?userId=2"
 ```
-Result: **VULNERABLE** - Shows "loggedInAs": "user1" but returns Bob's data. This demonstrates the BOLA vulnerability - no authorization check is performed.
+Result: **VULNERABLE** - Shows "loggedInAs": "user1" but returns Bob's data.
 
-**2. Test the FIXED endpoint (`/bola-fix`)**
+### Test the FIXED endpoint (`/api/users/bola-fix`)
 
 Access own data (allowed):
 ```bash
 curl -u user1:password "http://localhost:8080/api/users/bola-fix?userId=1"
-curl -u user2:password "http://localhost:8080/api/users/bola-fix?userId=2"
 ```
-Expected: Returns the correct user data - **Success**
 
 Access another user's data (blocked):
 ```bash
 curl -u user1:password "http://localhost:8080/api/users/bola-fix?userId=2"
 ```
-Expected: **404 Not Found** - Returns the same response as invalid user ID to prevent information leakage
+Expected: **404 Not Found**
 
-### Testing with Invalid User ID
+---
 
+## Testing Account Endpoints (JPA/H2 Database)
+
+### Test the VULNERABLE endpoint (`/api/accounts/bola-issue/{id}`)
+
+Access another user's account while authenticated as user1:
 ```bash
-curl -u user1:password "http://localhost:8080/api/users/bola-fix?userId=999"
+curl -u user1:password "http://localhost:8080/api/accounts/bola-issue/3"
 ```
-Expected: 404 Not Found
+Result: **VULNERABLE** - Shows "loggedInAs": "user1" but returns account ACC-003 (owned by user2).
+
+### Test the FIXED endpoint (`/api/accounts/bola-fix/{id}`)
+
+Access own account (allowed):
+```bash
+curl -u user1:password "http://localhost:8080/api/accounts/bola-fix/1"
+```
+Expected: Returns account ACC-001.
+
+Access another user's account (blocked):
+```bash
+curl -u user1:password "http://localhost:8080/api/accounts/bola-fix/3"
+```
+Expected: **404 Not Found**
+
+---
 
 ## Key Code Differences
 
@@ -92,7 +130,7 @@ public ResponseEntity<?> getUserBolaIssue(@RequestParam int userId) {
     return ResponseEntity.ok(response);
 }
 ```
-**Issue:** Authentication is performed, but no check if the authenticated user is authorized to access the requested user data. The response shows who is logged in, making the vulnerability obvious.
+**Issue:** No check if the authenticated user is authorized to access the requested user data.
 
 ### Fixed Code (bola-fix) - Using @PreAuthorize
 ```java
@@ -106,7 +144,50 @@ public ResponseEntity<?> getUserBolaFix(@RequestParam int userId) {
     return ResponseEntity.ok(user);
 }
 ```
-**Fix:** Uses `@PreAuthorize` with SpEL to verify that the authenticated user is accessing their own data. The `authentication.principal.userId` is retrieved from `CustomUserDetails`.
+**Fix:** Uses `@PreAuthorize` with SpEL to verify that the authenticated user is accessing their own data.
+
+---
+
+### Alternative Fix: Database Query Authorization (JPA)
+
+This approach bakes authorization directly into the database query, making it impossible to forget authorization checks.
+
+**Account Entity:**
+```java
+@Entity
+public class Account {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    private String accountName;
+    private String accountNumber;
+    private String ownerUsername;
+    private double balance;
+    // getters and setters
+}
+```
+
+**Repository with Built-in Authorization:**
+```java
+@Repository
+public interface AccountRepository extends JpaRepository<Account, Long> {
+    Optional<Account> findByIdAndOwnerUsername(Long id, String ownerUsername);
+}
+```
+
+**Controller:**
+```java
+@GetMapping("/bola-fix/{id}")
+public ResponseEntity<?> getAccountBolaFix(@PathVariable Long id, Principal principal) {
+    return accountRepository.findByIdAndOwnerUsername(id, principal.getName())
+        .map(ResponseEntity::ok)
+        .orElse(ResponseEntity.notFound().build());
+}
+```
+**Advantage:** The query only returns accounts owned by the authenticated user. No separate authorization check is needed.
+
+---
 
 ### SecurityExceptionHandler - Return 404 instead of 403
 ```java
@@ -120,6 +201,8 @@ public class SecurityExceptionHandler {
 }
 ```
 **Purpose:** When a user tries to access another user's data without authorization, return 404 instead of 403. This prevents attackers from enumerating valid user IDs.
+
+---
 
 ### CustomUserDetails
 ```java
@@ -136,6 +219,8 @@ public class CustomUserDetails implements UserDetails {
 }
 ```
 
+---
+
 ## Security Best Practices
 
 1. **Always validate object-level authorization** - Check if the authenticated user has permission to access the requested resource
@@ -144,3 +229,4 @@ public class CustomUserDetails implements UserDetails {
 4. **Implement custom UserDetailsService** - Load user details including application-specific fields from your user store
 5. **Fail securely** - Deny access by default when authorization checks fail
 6. **Prevent information leakage** - Return generic error responses (404) instead of specific ones (403) to avoid user enumeration attacks
+7. **Bake authorization into database queries** - Use parameterized queries that include ownership checks to make authorization a core part of data access
