@@ -256,6 +256,33 @@ public class CustomUserDetails implements UserDetails {
 ```
 
 ---
+## BOLA Scanning Skill
+
+This repository includes a `bola-security-check` skill for AI tools under `docs/skills` that automatically detects BOLA vulnerabilities in API endpoints. It supports Java/Spring Boot, Node/Express, Node/NestJS, Python/Django, Python/FastAPI, Ruby on Rails, Go/Gin, .NET/ASP.NET Core, and GraphQL.
+Copy The skills to your AI tool of choice based on the AI tools skills default directory structure.
+
+### Usage
+
+After adding or modifying an endpoint, ask coding agents:
+
+```
+Scan the project for BOLA vulnerabilities
+```
+
+The skill will discover endpoints accepting object identifiers, flag missing ownership checks, and guide you through applying the appropriate fix for your framework.
+
+```
+🔍 BOLA Scan Results:
+   Found 2 endpoint(s) with potential BOLA vulnerability:
+   • GET /api/accounts/{id} — accepts id without ownership check
+   • GET /api/users/{userId} — accepts userId without ownership check
+
+   Detected framework: Java / Spring Boot
+
+Q: Choose a fix approach (A: @PreAuthorize + SecurityService, B: JPA query-based auth, ...):
+```
+
+---
 
 ## Security Best Practices
 
